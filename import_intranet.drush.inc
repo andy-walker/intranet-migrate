@@ -83,7 +83,7 @@ class IntranetImport {
             
             // save the new node
             node_save($node);
-            drush_log('Inserted client: ' . $node->title, 'ok');
+            drush_log('Inserted client node: ' . $node->title, 'ok');
 
             // also set field_client node ref on the site with the node id of the client
             $site->field_client['und'][0]['nid'] = $node->nid;
@@ -156,6 +156,8 @@ class IntranetImport {
                 'format' => $source->format
             );
 
+            $is_new = !$this->comment_exists($comment->cid);
+
             // determine / set node type
             switch (node_load($comment->nid)->type) {
                 case 'support_ticket':
@@ -167,6 +169,9 @@ class IntranetImport {
                 default:
                     drush_log('Unable to determine node type for comment id: ' . $comment->cid, 'warning');
             }
+
+            drush_log(($is_new ? 'Inserting' : 'Updating') . ' comment: ' . $comment->subject, 'ok');
+            comment_save($comment);
 
         }
         
@@ -439,10 +444,15 @@ class IntranetImport {
             foreach ($properties_changed as $property)
                 $node->$property = array('und' => $source->$property);
 
+            $node->is_new = !$this->node_exists($node->nid);
+
             // todo: taxonomy, additional fields ..
 
             // create mapping table entry to allow future redirects
             //$this->map('support_ticket', $source->path, $source->nid, $node->nid);
+
+            drush_log(($node->is_new ? 'Inserting' : 'Updating') . ' support ticket node: ' . $node->title, 'ok');
+            node_save($node);
 
         }
 
@@ -484,10 +494,14 @@ class IntranetImport {
             foreach ($properties_changed as $property)
                 $node->$property = array('und' => $source->$property);
 
+            $node->is_new = !$this->node_exists($node->nid);
+
             // todo: additional fields, taxonomy etc
 
             // create mapping table entry to allow future redirects
             //$this->map('todo', $source->path, $source->nid, $node->nid);
+            drush_log(($node->is_new ? 'Inserting' : 'Updating') . ' todo node: ' . $node->title, 'ok');
+            node_save($node);
 
         }
 
@@ -530,6 +544,10 @@ class IntranetImport {
         // sql, and setting auto_increment to max(tid) + 1 at the end.
     }
     */
+
+    private function comment_exists($cid) {
+        return (bool)db_query("SELECT cid FROM comment WHERE cid = :cid", array(':cid' => $cid))->fetchField();
+    }
 
     private function node_exists($nid) {
         return (bool)db_query("SELECT nid FROM node WHERE nid = :nid", array(':nid' => $nid))->fetchField();
@@ -588,14 +606,15 @@ function drush_import_intranet() {
     $import->sites();
     
 
-    $import->notes();
+    //$import->notes();
 
     $import->support_tickets();
+    $import->comments();
     //$import->todos();
 
     # clients should be done at the end as these are new content items - we don't
     # want to accidentally use node ids that will be needed for imported content
-    $import->clients();
+    //$import->clients();
 
     # todo 
     //$import->files();
