@@ -444,6 +444,11 @@ class IntranetImport {
             foreach ($properties_changed as $property)
                 $node->$property = array('und' => $source->$property);
 
+            if (trim($source->body)) {
+                $node->body['und'][0]['value']  = $source->body;
+                $node->body['und'][0]['format'] = $source->format;
+            }
+
             $node->is_new = !$this->node_exists($node->nid);
 
             // todo: taxonomy, additional fields ..
@@ -495,6 +500,11 @@ class IntranetImport {
                 $node->$property = array('und' => $source->$property);
 
             $node->is_new = !$this->node_exists($node->nid);
+
+            if (trim($source->body)) {
+                $node->body['und'][0]['value']  = $source->body;
+                $node->body['und'][0]['format'] = $source->format;
+            }
 
             // todo: additional fields, taxonomy etc
 
