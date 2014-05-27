@@ -195,7 +195,7 @@ function drush_export_intranet() {
             
             $total   = db_fetch_object(db_query("SELECT COUNT(*) AS total FROM $dataset"))->total;
             $results = db_query("SELECT * FROM $dataset");
-
+            $current = 0;
             
             while ($result = db_fetch_object($results)) {
                 db_query("
@@ -206,6 +206,7 @@ function drush_export_intranet() {
                     $result->$entity_id,
                     serialize($result)
                 );
+                ++$current;
                 drush_log("Exported $dataset record - $current/$total", 'ok');
             }
 
