@@ -123,13 +123,16 @@ class IntranetImport {
 
         // some properties are the same in all cases - add those to this array:
         $properties_static = array(
-            'language' => 'und'
+            'language' => 'und',
+            //'status'   => 1
         );
 
         // some properties can be copied as is - add those this array:
         $properties_unchanged = array(
-            'cid', 'pid', 'nid', 'uid', 'subject', 'hostname', 'status', 'name', 'mail', 'homepage'
+            'pid', 'nid', 'uid', 'subject', 'status', 'hostname', 'name', 'mail', 'homepage'
         );
+
+        $max_cid = db_query("SELECT MAX(cid) FROM comment")->fetchField();
       
         foreach (db_query("SELECT * FROM circle_import_data WHERE entity_type = 'comment'") as $source) {
 
@@ -151,12 +154,12 @@ class IntranetImport {
             $comment->changed = $source->timestamp;
 
             // convert body to D7 format
-            $comment->body['und'][0] = array(
+            $comment->comment_body['und'][0] = array(
                 'value'  => $source->comment,
                 'format' => $source->format
             );
 
-            $is_new = !$this->comment_exists($comment->cid);
+            //$comment->is_new = !$this->comment_exists($comment->cid);
 
             // determine / set node type
             switch (node_load($comment->nid)->type) {
@@ -167,13 +170,20 @@ class IntranetImport {
                     $comment->node_type = 'comment_node_todo';
                     break;
                 default:
-                    drush_log('Unable to determine node type for comment id: ' . $comment->cid, 'warning');
+                    drush_log('Unable to determine node type for comment id: ', 'warning');
             }
 
-            drush_log(($is_new ? 'Inserting' : 'Updating') . ' comment: ' . $comment->subject, 'ok');
+            drush_log('Inserting comment: ' . $comment->subject, 'ok');
+            //echo "Before: ";
+            //print_r($comment);
+            comment_submit($comment);
             comment_save($comment);
+            //echo "After: ";
+            //print_r($comment);
 
         }
+
+        db_query("UPDATE comment SET status = 1 WHERE cid > " . $max_cid);
         
     }
 
@@ -413,12 +423,13 @@ class IntranetImport {
 
         // some properties are the same in all cases - add those to this array:
         $properties_static = array(
-            'language' => 'und'
+            'language' => 'und',
+            'status'   => 1
         );
 
         // some properties can be copied as is - add those this array:
         $properties_unchanged = array(
-            'uid', 'title', 'type', 'log', 'status', 'created', 'changed', 'comment',
+            'nid', 'uid', 'title', 'type', 'log', 'status', 'created', 'changed', 'comment',
             'promote', 'sticky', 'tnid', 'translate', 'revision_timestamp', 'revision_uid',
             'data', 'last_comment_timestamp', 'last_comment_name', 'name', 'picture'
         );
@@ -430,7 +441,10 @@ class IntranetImport {
         foreach (db_query("SELECT * FROM circle_import_data WHERE type = 'support_ticket'") as $source) {
 
             // unserialize existing D6 node data
-            $source = unserialize($source->data);
+            if (!$source = unserialize($source->data)) {
+                drush_log('Failed to deserialize - skipping node', 'warning');
+                continue;
+            }
             
             // construct D7 node object
             $node   = new StdClass;
@@ -457,6 +471,7 @@ class IntranetImport {
             //$this->map('support_ticket', $source->path, $source->nid, $node->nid);
 
             drush_log(($node->is_new ? 'Inserting' : 'Updating') . ' support ticket node: ' . $node->title, 'ok');
+
             node_save($node);
 
         }
@@ -608,7 +623,7 @@ function drush_import_intranet() {
 
     $import = new IntranetImport();
 
-    module_disable(array('pathauto'));
+    module_disable(array('pathauto', 'ci_support', 'tracker'));
 
     //$import->users(); // this has been run
 
@@ -630,7 +645,7 @@ function drush_import_intranet() {
     //$import->files();
 
 
-    module_enable(array('pathauto'));
+    module_enable(array('pathauto', 'ci_support', 'tracker'));
 
 }
 
