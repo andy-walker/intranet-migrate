@@ -162,7 +162,7 @@ class IntranetImport {
             //$comment->is_new = !$this->comment_exists($comment->cid);
 
             // determine / set node type
-            switch (node_load($comment->nid)->type) {
+            switch ($node_type = node_load($comment->nid)->type) {
                 case 'support_ticket':
                     $comment->node_type = 'comment_node_support_ticket';
                     break;
@@ -180,6 +180,36 @@ class IntranetImport {
             comment_save($comment);
             //echo "After: ";
             //print_r($comment);
+
+            switch ($node_type) {
+                case 'support_ticket':
+                    $ticket_comment = $this->loadSupportEntity('ticket_comment');
+                    db_query("
+                        REPLACE INTO ci_support_comments (
+                            content_nid, comment_id, comment_author, comment_title, private_comment, assigned, prev_assigned,
+                            subscribed, priority, prev_priority, state, prev_state
+                        ) VALUES (
+                            :content_nid, :comment_id, :comment_author, :comment_title, :private_comment, :assigned, :prev_assigned,
+                            :subscribed, :priority, :prev_priority, :state, :prev_state                           
+                        )
+                    ", array(
+                          ':content_nid'     => $comment->nid,
+                          ':comment_id'      => $comment->cid,
+                          ':comment_author'  => $comment->uid,
+                          ':comment_title'   => $comment->subject,
+                          ':private_comment' => '',
+                          ':assigned'        => $ticket_comment->assigned,
+                          ':prev_assigned'   => $ticket_comment->assigned,
+                          ':subscribed'      => '',
+                          ':priority'        => $ticket_comment->priority,
+                          ':prev_priority'   => $ticket_comment->priority,
+                          ':state'           => $ticket_comment->state,
+                          ':prev_state'      => $ticket_comment->state
+
+                       )
+                    );
+                    break;
+            }
 
         }
 
@@ -572,6 +602,51 @@ class IntranetImport {
 
     private function comment_exists($cid) {
         return (bool)db_query("SELECT cid FROM comment WHERE cid = :cid", array(':cid' => $cid))->fetchField();
+    }
+
+    /**
+     * Helper function to load support metadata, such as ticket priority, assigned etc
+     * @param  $entity_name - the name of the entity (minus 'support_')
+     * @param  $entity_id   - the entity_id to retrieve
+     * @return StdClass     - the unserialized entity
+     */
+    private function loadSupportEntity($entity_name, $entity_id) {
+        
+        static $pk_names = array(
+            'support_ticket'         => 'nid', 
+            'support_ticket_comment' => 'cid', 
+            'support_assigned'       => 'nid', 
+            'support_client'         => 'clid',
+            'support_og_mapping'     => 'gid', 
+            'support_priority'       => 'pid', 
+            'support_states'         => 'sid'
+        );
+
+        $entity_name = 'support_' . $entity_name;
+        
+        if (!isset($pk_names[$entity_name]))
+            return drush_log(dt(
+                "Non-existent entity name '$entity_name' in @class::@method",
+                array(
+                    '@class'  => __CLASS__,
+                    '@method' => __METHOD__
+                )
+            ), 'error');
+
+        $pk = $pk_names[$entity_name];
+    
+        return unserialize(
+            db_query("
+                SELECT data FROM circle_import_data 
+                 WHERE entity_type = :entity_type
+                   AND $pk = :entity_id
+            ", array(
+                  ':entity_type' => $entity_name,
+                  ':entity_id'   => $entity_id
+               )
+            )->fetchField()
+        );
+
     }
 
     private function node_exists($nid) {
