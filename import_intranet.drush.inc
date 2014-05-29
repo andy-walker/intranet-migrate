@@ -132,7 +132,8 @@ class IntranetImport {
             'pid', 'nid', 'uid', 'subject', 'status', 'hostname', 'name', 'mail', 'homepage'
         );
 
-        $max_cid = db_query("SELECT MAX(cid) FROM comment")->fetchField();
+        $max_cid                = db_query("SELECT MAX(cid) FROM comment")->fetchField();
+        $min_ticket_comment_cid = db_query("SELECT MIN(entity_id) FROM circle_import_data WHERE entity_type = 'support_ticket_comment'")->fetchField();
       
         foreach (db_query("SELECT * FROM circle_import_data WHERE entity_type = 'comment'") as $source) {
 
@@ -182,33 +183,45 @@ class IntranetImport {
             //print_r($comment);
 
             switch ($node_type) {
+                
                 case 'support_ticket':
-                    $ticket_comment = $this->loadSupportEntity('ticket_comment');
-                    db_query("
-                        REPLACE INTO ci_support_comments (
-                            content_nid, comment_id, comment_author, comment_title, private_comment, assigned, prev_assigned,
-                            subscribed, priority, prev_priority, state, prev_state
-                        ) VALUES (
-                            :content_nid, :comment_id, :comment_author, :comment_title, :private_comment, :assigned, :prev_assigned,
-                            :subscribed, :priority, :prev_priority, :state, :prev_state                           
-                        )
-                    ", array(
-                          ':content_nid'     => $comment->nid,
-                          ':comment_id'      => $comment->cid,
-                          ':comment_author'  => $comment->uid,
-                          ':comment_title'   => $comment->subject,
-                          ':private_comment' => '',
-                          ':assigned'        => $ticket_comment->assigned,
-                          ':prev_assigned'   => $ticket_comment->assigned,
-                          ':subscribed'      => '',
-                          ':priority'        => $ticket_comment->priority,
-                          ':prev_priority'   => $ticket_comment->priority,
-                          ':state'           => $ticket_comment->state,
-                          ':prev_state'      => $ticket_comment->state
+                    
+                    if ($source->cid >= $min_ticket_comment_cid) {
 
-                       )
-                    );
+                        if (!$ticket_comment = $this->loadSupportEntity('ticket_comment', $source->cid)) {
+                            drush_log('Unable to load support_ticket_comment record for cid ' . $source->cid, 'warning');
+                            break;
+                        }
+
+                        db_query("
+                            REPLACE INTO ci_support_comments (
+                                content_nid, comment_id, comment_author, comment_title, private_comment, assigned, prev_assigned,
+                                subscribed, priority, prev_priority, state, prev_state
+                            ) VALUES (
+                                :content_nid, :comment_id, :comment_author, :comment_title, :private_comment, :assigned, :prev_assigned,
+                                :subscribed, :priority, :prev_priority, :state, :prev_state                           
+                            )
+                        ", array(
+                              ':content_nid'     => $comment->nid,
+                              ':comment_id'      => $comment->cid,
+                              ':comment_author'  => $comment->uid,
+                              ':comment_title'   => $comment->subject,
+                              ':private_comment' => '',
+                              ':assigned'        => $ticket_comment->assigned,
+                              ':prev_assigned'   => $ticket_comment->assigned,
+                              ':subscribed'      => '',
+                              ':priority'        => $ticket_comment->priority,
+                              ':prev_priority'   => $ticket_comment->priority,
+                              ':state'           => $ticket_comment->state,
+                              ':prev_state'      => $ticket_comment->state
+
+                           )
+                        );
+
+                    }
+
                     break;
+            
             }
 
         }
@@ -632,14 +645,12 @@ class IntranetImport {
                     '@method' => __METHOD__
                 )
             ), 'error');
-
-        $pk = $pk_names[$entity_name];
     
         return unserialize(
             db_query("
                 SELECT data FROM circle_import_data 
                  WHERE entity_type = :entity_type
-                   AND $pk = :entity_id
+                   AND entity_id = :entity_id
             ", array(
                   ':entity_type' => $entity_name,
                   ':entity_id'   => $entity_id
