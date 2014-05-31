@@ -179,41 +179,6 @@ function drush_export_intranet() {
 
     };
 
-    $export_support_meta = function() use ($error, $warning) {
-
-        foreach (array(
-            
-            'support_ticket'         => 'nid', 
-            'support_ticket_comment' => 'cid', 
-            'support_assigned'       => 'nid', 
-            'support_client'         => 'clid',
-            'support_og_mapping'     => 'gid', 
-            'support_priority'       => 'pid', 
-            'support_states'         => 'sid'
-
-        ) as $dataset => $entity_id) {
-            
-            $total   = db_fetch_object(db_query("SELECT COUNT(*) AS total FROM $dataset"))->total;
-            $results = db_query("SELECT * FROM $dataset");
-            $current = 0;
-            
-            while ($result = db_fetch_object($results)) {
-                db_query("
-                    INSERT INTO circle_import_data (id, entity_type, entity_id, parent_entity_id, type, data) 
-                         VALUES (NULL, '%s', '%s', 0, '', '%s')
-                ",
-                    $dataset,
-                    $result->$entity_id,
-                    serialize($result)
-                );
-                ++$current;
-                drush_log("Exported $dataset record - $current/$total", 'ok');
-            }
-
-        }
-
-    };
-
     // create table to hold the data
     db_query("DROP TABLE IF EXISTS circle_import_data");
     db_query("
