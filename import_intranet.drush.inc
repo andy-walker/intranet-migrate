@@ -511,10 +511,14 @@ class IntranetImport {
 
             # update field_hours_spent - want to try and improve this so that Drupal knows
             # which hours go with which comment, but just get them onto the node for now
-            foreach ($source->field_hours_spent_support as $hours) {
-                $node->field_hours_spent['und'][] = array(
-                    'value' => $hours['value']
-                );
+            if (isset($source->field_hours_spent_support) and is_array($source->field_hours_spent_support)) {
+                foreach ($source->field_hours_spent_support as $hours) {
+                    $node->field_hours_spent['und'][] = array(
+                        'value' => $hours['value']
+                    );
+                }
+            } else {
+                drush_log('Invalid / missing data for field_hours_spent_support', 'warning');
             }
 
             $node->is_new = !$this->node_exists($node->nid);
@@ -740,7 +744,7 @@ function drush_import_intranet() {
 
     # clients should be done at the end as these are new content items - we don't
     # want to accidentally use node ids that will be needed for imported content
-    $import->clients();
+    //$import->clients();
     
     # import comments and link to content
     $import->comments();
