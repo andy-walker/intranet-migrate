@@ -648,14 +648,13 @@ class IntranetImport {
 
         $pk_name = $pk_names[$entity_name];
     
-        return unserialize(
-            db_query("
-                SELECT * FROM $entity_name WHERE $pk_name = :entity_id
-            ", array(
-                  ':entity_id'   => $entity_id
-               )
-            )->fetchField()
-        );
+        return db_query("
+            SELECT * FROM $entity_name WHERE $pk_name = :entity_id
+        ", array(
+              ':entity_id' => $entity_id
+           )
+        )->fetchObject();
+        
 
     }
 
