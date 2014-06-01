@@ -206,8 +206,6 @@ function drush_export_intranet() {
 
     // export comments and taxonomy terms
     $export_comments();
-    $export_support_meta();
-    
     $export_og_membership();
     $export_taxonomy();
     $export_files();

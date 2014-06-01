@@ -635,7 +635,7 @@ class IntranetImport {
             'support_states'         => 'sid'
         );
 
-        $entity_name = 'support_' . $entity_name;
+        $entity_name = 'support_' . $entity_name; 
         
         if (!isset($pk_names[$entity_name]))
             return drush_log(dt(
@@ -645,14 +645,13 @@ class IntranetImport {
                     '@method' => __METHOD__
                 )
             ), 'error');
+
+        $pk_name = $pk_names[$entity_name];
     
         return unserialize(
             db_query("
-                SELECT data FROM circle_import_data 
-                 WHERE entity_type = :entity_type
-                   AND entity_id = :entity_id
+                SELECT * FROM $entity_name WHERE $pk_name = :entity_id
             ", array(
-                  ':entity_type' => $entity_name,
                   ':entity_id'   => $entity_id
                )
             )->fetchField()
