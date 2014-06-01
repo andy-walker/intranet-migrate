@@ -163,7 +163,10 @@ class IntranetImport {
             //$comment->is_new = !$this->comment_exists($comment->cid);
 
             // determine / set node type
-            switch ($node_type = node_load($comment->nid)->type) {
+
+            $node = node_load($comment->nid);
+
+            switch ($node->type) {
                 case 'support_ticket':
                     $comment->node_type = 'comment_node_support_ticket';
                     break;
@@ -182,7 +185,7 @@ class IntranetImport {
             //echo "After: ";
             //print_r($comment);
 
-            switch ($node_type) {
+            switch ($node->type) {
                 
                 case 'support_ticket':
                     
@@ -479,7 +482,7 @@ class IntranetImport {
 
         // some fields need to be upgraded to D7 array syntax (with language keys)
         // add those to this array:
-        $properties_changed = array();
+        $properties_changed = array('field_hours_total');
 
         foreach (db_query("SELECT * FROM circle_import_data WHERE type = 'support_ticket'") as $source) {
 
@@ -504,6 +507,14 @@ class IntranetImport {
             if (trim($source->body)) {
                 $node->body['und'][0]['value']  = $source->body;
                 $node->body['und'][0]['format'] = $source->format;
+            }
+
+            # update field_hours_spent - want to try and improve this so that Drupal knows
+            # which hours go with which comment, but just get them onto the node for now
+            foreach ($source->field_hours_spent_support as $hours) {
+                $node->field_hours_spent['und'][] = array(
+                    'value' => $hours['value']
+                );
             }
 
             $node->is_new = !$this->node_exists($node->nid);
@@ -543,7 +554,10 @@ class IntranetImport {
         foreach (db_query("SELECT * FROM circle_import_data WHERE type = 'todo'") as $source) {
             
             // unserialize existing D6 node data
-            $source = unserialize($source->data);
+            if (!$source = unserialize($source->data)) {
+                drush_log('Unable to unserialize node data', 'warning');
+                continue;
+            }
             
             // construct D7 node object
             $node   = new StdClass;
@@ -568,6 +582,7 @@ class IntranetImport {
 
             // create mapping table entry to allow future redirects
             //$this->map('todo', $source->path, $source->nid, $node->nid);
+
             drush_log(($node->is_new ? 'Inserting' : 'Updating') . ' todo node: ' . $node->title, 'ok');
             node_save($node);
 
@@ -704,32 +719,39 @@ class IntranetImport {
  * Main command callback
  */
 function drush_import_intranet() {
+    
+    $start_time      = microtime(true);
+    $disable_modules = array('pathauto', 'ci_support', 'tracker');
+    $import          = new IntranetImport();
 
-    $import = new IntranetImport();
-
-    module_disable(array('pathauto', 'ci_support', 'tracker'));
+    drush_print('Disabling modules: ' . implode(', ', $disable_modules) . '...');
+    module_disable($disable_modules);
+    drush_log('Success!', 'ok');
 
     //$import->users(); // this has been run
 
     // do ogs first, because other things link to them
     $import->sites();
     
-
-    //$import->notes();
-
+    # import other content items
+    $import->notes();
     $import->support_tickets();
-    $import->comments();
-    //$import->todos();
+    $import->todos();
 
     # clients should be done at the end as these are new content items - we don't
     # want to accidentally use node ids that will be needed for imported content
-    //$import->clients();
+    $import->clients();
+    
+    # import comments and link to content
+    $import->comments();
 
     # todo 
     //$import->files();
+    drush_print('Disabling modules: ' . implode(', ', $disable_modules) . '...');
+    module_enable($disable_modules);
+    drush_log('Success!', 'ok');
 
-
-    module_enable(array('pathauto', 'ci_support', 'tracker'));
+    drush_log(sprintf("Import completed in %.2f seconds\n\n", microtime(true) - $start_time), 'ok');
 
 }
 
