@@ -15,6 +15,8 @@ define('IMPORT_INTRANET_LIVE_SITE_PARENT_TID', 889);
 define('IMPORT_INTRANET_TEST_SITE_PARENT_TID', 891);
 define('IMPORT_INTRANET_DEV_SITE_PARENT_TID',  890);
 
+define('IMPORT_INTRANET_START_NODE', 8495);
+
 function import_intranet_drush_command() {  
     
     return array(
@@ -60,6 +62,18 @@ class IntranetImport {
               COMMENT='Table to map old node ids to new ones, for redirection';
         ");
         */
+    }
+
+    public function assignSupportContent() {
+
+        $results = db_query("SELECT nid FROM node WHERE type = 'support_ticket'");
+        foreach ($results as $result) 
+            # may not perform this check in future - ie: update all
+            if (!$this->hasSupportContentEntity($result->nid))
+                $this->createSupportContentEntity($result->nid);
+            
+    
+
     }
 
     // For each 'site', create a corresponding client
@@ -309,6 +323,47 @@ class IntranetImport {
 
     }
 
+    /**
+     * Perform preparation tasks prior to starting import
+     */
+    public function prepare() {
+
+        # delete all nodes above and including starting node
+        # todo: may wish to archive a selection of nodes (eg: kb items)
+        # and re-import at end
+        $results = db_query("
+            SELECT nid FROM node WHERE nid >= :nid
+        ", array(
+              ':nid' => IMPORT_INTRANET_START_NODE
+           )
+        );
+        foreach ($results as $result) {
+            drush_log("Deleting nid {$result->nid}: " . node_load($result->nid)->title, 'ok');
+            node_delete($result->nid);
+        }
+
+        # delete orphaned data from field_hours_support_total
+        $results = db_query("
+            SELECT entity_id
+            FROM field_data_field_hours_total h
+            LEFT JOIN node ON node.nid = h.entity_id
+            WHERE entity_type = 'node' AND node.nid IS NULL
+        ");
+
+        foreach ($results as $result) {
+            drush_log("Deleting orphaned field_data_field_hours_total data for nid {$result->entity_id}", 'ok');
+            db_query("
+                DELETE FROM field_data_field_hours_total 
+                 WHERE entity_type = 'node'
+                   AND entity_id = :entity_id
+            ", array(
+                  ':entity_id' => $result->entity_id
+               )
+            );
+        }
+
+    }
+
     // Import 'site' content type
     public function sites() {
         
@@ -521,7 +576,7 @@ class IntranetImport {
                 drush_log('Invalid / missing data for field_hours_spent_support', 'warning');
             }
 
-            $node->is_new = !$this->node_exists($node->nid);
+            $node->is_new = !$this->node_exists($source->nid);
 
             // todo: taxonomy, additional fields ..
 
@@ -529,7 +584,8 @@ class IntranetImport {
             //$this->map('support_ticket', $source->path, $source->nid, $node->nid);
 
             drush_log(($node->is_new ? 'Inserting' : 'Updating') . ' support ticket node: ' . $node->title, 'ok');
-
+            if ($node->nid == 3822)
+                print_r($node);
             node_save($node);
 
         }
@@ -636,6 +692,88 @@ class IntranetImport {
         return (bool)db_query("SELECT cid FROM comment WHERE cid = :cid", array(':cid' => $cid))->fetchField();
     }
 
+    private function createSupportContentEntity($content_nid) {
+        if ($group_nid = $this->getContentGroup($content_nid)) {
+            if ($client_nid = $this->getClientForSite($group_nid)) {
+                
+                $assigned   = $this->getSupportAssigned($content_nid);
+                $subscribed = $this->getSupportSubscribed($content_nid);
+                $ticket     = $this->loadSupportEntity('support_ticket', $content_nid);
+                $priority   = $ticket->priority;
+                $status     = $ticket->state;
+                $complete   = $ticket->state == 4 ? 1 : 0;
+
+                db_query("
+                    REPLACE INTO ci_support_content (content_nid, client_nid, assigned, subscribed, status, priority, complete)
+                          VALUES (:content_nid, :client_nid, :assigned, :subscribed, :status, :priority, :complete)
+                ", array(
+                      ':content_nid' => $content_nid,
+                      ':client_nid'  => $client_nid,
+                      ':assigned'    => $assigned,
+                      ':subscribed'  => $subscribed,
+                      ':status'      => $status,
+                      ':priority'    => $priority,
+                      ':complete'    => $complete
+                   )
+                );
+            } else {
+                drush_log('Unable to get client for site nid ' . $group_nid . ': ' . node_load($group_nid)->title, 'warning');
+            }
+        } else {
+            drush_log('Unable to get OG Membership for nid ' . $content_nid . ': ' . node_load($content_nid)->title, 'warning');
+        }
+    }
+
+    private function getClientForSite($site_nid) {
+        return db_query("
+            SELECT field_client_nid FROM field_data_field_client
+             WHERE entity_type = 'node' AND entity_id = :entity_id 
+        ", array(
+              ':entity_id' => $site_nid
+           )
+        )->fetchField();
+    }
+
+    private function getContentGroup($content_nid) {
+        return db_query("
+            SELECT parent_entity_id FROM circle_import_data 
+             WHERE entity_type = 'og_ancestry'
+               AND entity_id = :content_nid
+        ", array(
+              ':content_nid' => $content_nid
+           )
+        )->fetchField();
+    }
+
+    private function getSupportAssigned($ticket_nid) {
+        if ($entity = $this->loadSupportEntity('support_ticket', $ticket_nid))
+            return $entity->assigned;
+    }
+
+    private function getSupportSubscribed($ticket_nid) {
+        $results = db_query("
+            SELECT uid FROM support_assigned WHERE nid = :ticket_nid AND active
+        ", array(
+              ':ticket_nid' => $ticket_nid
+           )
+        );
+        $subscribed = array();
+        foreach ($results as $result)
+            $subscribed[] = $result->uid;
+
+        return $subscribed;
+        
+    }
+
+    private function hasSupportContentEntity($content_nid) {
+        return (bool)db_query("
+            SELECT client_nid FROM ci_support_content WHERE content_nid = :content_nid
+        ", array(
+              ':content_nid' => $content_nid
+           )
+        );
+    }
+
     /**
      * Helper function to load support metadata, such as ticket priority, assigned etc
      * @param  $entity_name - the name of the entity (minus 'support_')
@@ -715,7 +853,8 @@ class IntranetImport {
             UPDATE url_alias SET source = 'node/$new_nid'
              WHERE source = 'node/$old_nid'
         ");
-    }       
+    }  
+
 
 };
 
@@ -732,6 +871,8 @@ function drush_import_intranet() {
     module_disable($disable_modules);
     drush_log('Success!', 'ok');
 
+    $import->prepare();
+
     //$import->users(); // this has been run
 
     // do ogs first, because other things link to them
@@ -744,14 +885,17 @@ function drush_import_intranet() {
 
     # clients should be done at the end as these are new content items - we don't
     # want to accidentally use node ids that will be needed for imported content
-    //$import->clients();
+    $import->clients();
+
+    # assign todos and support tickets to clients, now they've been created
+    $import->assignSupportContent();
     
     # import comments and link to content
     $import->comments();
 
     # todo 
     //$import->files();
-    drush_print('Disabling modules: ' . implode(', ', $disable_modules) . '...');
+    drush_print('Enabling modules: ' . implode(', ', $disable_modules) . '...');
     module_enable($disable_modules);
     drush_log('Success!', 'ok');
 

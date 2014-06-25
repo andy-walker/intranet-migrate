@@ -165,7 +165,7 @@ function drush_export_intranet() {
                 
                 db_query("
                     INSERT INTO circle_import_data (id, entity_type, entity_id, parent_entity_id, type, data) 
-                         VALUES (NULL, '$entity', 0, 0, '', '%s')
+                         VALUES (NULL, '$entity', '{$result->nid}', '{$result->group_nid}', '', '%s')
                 ",
                     serialize($row)
                 );               
@@ -175,6 +175,27 @@ function drush_export_intranet() {
             
             }
 
+        }
+
+    };
+
+    $export_users = function() use ($error, $warning) {
+
+        // get file info for each file on the system
+        $results = db_query("SELECT * FROM users");
+        $current = 0;
+
+        while ($user = db_fetch_object($results)) {
+            // insert serialized node data into circle_import_data table
+            db_query("
+                INSERT INTO circle_import_data (id, entity_type, entity_id, parent_entity_id, type, data) 
+                     VALUES (NULL, 'user', {$user->uid}, 0, '', '%s')
+            ",
+                serialize($user)
+            );
+
+            // output progress
+            drush_log('Inserted row for user id ' . $user->uid . ' (' . $user->name . ") - record " . ++$current . "/unknown", 'ok');            
         }
 
     };
@@ -193,6 +214,9 @@ function drush_export_intranet() {
           KEY `type` (`type`)
         ) ENGINE=InnoDB DEFAULT CHARSET=latin1 COMMENT='Table to export D6 node data into' AUTO_INCREMENT=1 ;
     ");
+
+    // export user
+    $export_users();
 
     // export content
     
