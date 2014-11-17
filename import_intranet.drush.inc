@@ -70,7 +70,7 @@ class IntranetImport {
         foreach ($results as $result) {
             # may not perform this check in future - ie: update all
             if (!$this->hasSupportContentEntity($result->nid)) {
-                drush_log('No, support content entity for node ' . $result->nid . '. Creating...', 'ok');
+                drush_log('No support content entity for node ' . $result->nid . '. Creating...', 'ok');
                 $this->createSupportContentEntity($result->nid);
             } else 
                 drush_log('Support content entity already exists for node ' . $result->nid . '. Skipping record.', 'ok');
@@ -132,7 +132,7 @@ class IntranetImport {
 
             // save the site node (updating field_client) - do this down here otherwise $site->path
             // will get destroyed before we need to use it
-            echo "site = " . print_r($site, true) . PHP_EOL;
+            // echo "site = " . print_r($site, true) . PHP_EOL;
             node_save($site);
 
             // create mapping table entry to allow future redirects
@@ -815,7 +815,7 @@ class IntranetImport {
                 
                 $assigned   = $this->getSupportAssigned($content_nid);
                 $subscribed = $this->getSupportSubscribed($content_nid);
-                $ticket     = $this->loadSupportEntity('support_ticket', $content_nid);
+                $ticket     = $this->loadSupportEntity('ticket', $content_nid);
                 $priority   = $ticket->priority;
                 $status     = $ticket->state;
                 $complete   = $ticket->state == 4 ? 1 : 0;
@@ -865,7 +865,7 @@ class IntranetImport {
     }
 
     private function getSupportAssigned($ticket_nid) {
-        if ($entity = $this->loadSupportEntity('support_ticket', $ticket_nid))
+        if ($entity = $this->loadSupportEntity('ticket', $ticket_nid))
             return $entity->assigned;
     }
 
