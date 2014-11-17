@@ -67,11 +67,14 @@ class IntranetImport {
     public function assignSupportContent() {
 
         $results = db_query("SELECT nid FROM node WHERE type = 'support_ticket'");
-        foreach ($results as $result) 
+        foreach ($results as $result) {
             # may not perform this check in future - ie: update all
-            if (!$this->hasSupportContentEntity($result->nid))
+            if (!$this->hasSupportContentEntity($result->nid)) {
+                drush_log('No, support content entity for node ' . $result->nid . '. Creating...', 'ok');
                 $this->createSupportContentEntity($result->nid);
-            
+            } else 
+                drush_log('Support content entity already exists for node ' . $result->nid . '. Skipping record.', 'ok');
+        }
     
 
     }
@@ -82,7 +85,11 @@ class IntranetImport {
         // query all existing site nodes from the Drupal db
         foreach (db_query("SELECT nid FROM node WHERE type = 'site'") as $source) {
 
-            $site = node_load($source->nid);
+            if (!$site = node_load($source->nid)) {
+                continue;
+                //echo "Failed to load node id " . $source->nid . PHP_EOL;
+                //exit("site2 = ". print_r($site, true));
+            }
             $path = drupal_lookup_path('alias', 'node/' . $source->nid);
             
             // construct D7 node object
@@ -96,6 +103,7 @@ class IntranetImport {
             $node->field_client_sites['und'][0]['nid'] = $source->nid;
             
             // save the new node
+            //echo "client = " . print_r($node, true) . PHP_EOL;
             node_save($node);
             drush_log('Inserted client node: ' . $node->title, 'ok');
 
@@ -124,6 +132,7 @@ class IntranetImport {
 
             // save the site node (updating field_client) - do this down here otherwise $site->path
             // will get destroyed before we need to use it
+            echo "site = " . print_r($site, true) . PHP_EOL;
             node_save($site);
 
             // create mapping table entry to allow future redirects
@@ -188,7 +197,7 @@ class IntranetImport {
                     $comment->node_type = 'comment_node_todo';
                     break;
                 default:
-                    drush_log('Unable to determine node type for comment id: ', 'warning');
+                    drush_log('Unable to determine node type for comment id: ' . $comment->cid . ' .. ' . print_r($node, true), 'warning');
             }
 
             drush_log('Inserting comment: ' . $comment->subject, 'ok');
@@ -458,6 +467,7 @@ class IntranetImport {
             }
             
             drush_log(($node->is_new ? 'Inserting' : 'Updating') . ' site node: ' . $node->title, 'ok');
+            //print_r($node);
             node_save($node);
             //og_insert_group($node);
             
@@ -584,8 +594,8 @@ class IntranetImport {
             //$this->map('support_ticket', $source->path, $source->nid, $node->nid);
 
             drush_log(($node->is_new ? 'Inserting' : 'Updating') . ' support ticket node: ' . $node->title, 'ok');
-            if ($node->nid == 3822)
-                print_r($node);
+            #if ($node->nid == 3822)
+            #    print_r($node);
             node_save($node);
 
         }
@@ -655,6 +665,111 @@ class IntranetImport {
      * Import users from csv file
      */
     public function users() {
+
+        $user_exists = function($uid) {
+            return (bool)db_query("SELECT COUNT(*) FROM users WHERE uid = :uid", array(
+                ':uid' => $uid
+            ))->fetchField();
+        };
+
+        # delete all test user accounts - do this through the api, which should unassign any created content
+        /*
+        foreach (db_query("SELECT uid FROM users WHERE uid >= 562") as $user) {
+            drush_log('Deleting user ' . $user->uid, 'ok');
+            user_delete($user->uid);
+        }
+        */
+
+        # prepare to do user import
+        require_once DRUPAL_ROOT . "/includes/password.inc";
+        $counter = 0;
+
+        # this is deliberately done with queries to avoid firing hooks .. we just want to 
+        # quietly upgrade all user accounts / import new users + retain same uids as D6
+        db_query("DELETE FROM users WHERE uid > 1");
+        db_query("DELETE FROM users_roles WHERE uid > 1");
+
+        foreach (db_query("SELECT * FROM circle_import_data WHERE entity_type = 'user'") as $d6_account) {
+            
+            $row = (array)unserialize($d6_account->data);
+            if ($row['uid'] <= 1)
+                continue;
+
+            //convert password from Drupal 6 style to Drupal 7 style
+            $hashed_pass='U'.user_hash_password($row['pass'],11);
+            //print_r($row);
+            
+            db_query("
+                REPLACE INTO users (
+                    uid, name, pass, mail, theme, signature, created, access, status, 
+                    timezone, language, init, data, login, signature_format
+                ) VALUES (
+                    :uid, :name, :pass, :mail, :theme, :signature, :created, :access, :status, 
+                    :timezone, :language, :init, :data, :login, :signature_format
+                )
+            ", array(
+                  ':uid'       => $row['uid'],
+                  ':name'      => $row['name'],
+                  ':pass'      => $hashed_pass,
+                  ':mail'      => $row['mail'],
+                  ':theme'     => $row['theme'],
+                  ':signature' => $row['signature'],
+                  ':created'   => $row['created'],
+                  ':access'    => $row['access'],
+                  ':status'    => $row['status'],
+                  ':timezone'  => $row['timezone'],
+                  ':language'  => $row['language'],
+                  ':init'      => $row['init'],
+                  ':data'      => $row['data'],
+                  ':login'     => $row['login'],
+                  ':signature_format' => 4
+               )
+            );
+            drush_log('Recreated user account for ' . $row['name'], 'ok');
+
+            foreach ($row['roles'] as $rid => $role_name) {
+                db_query("REPLACE INTO users_roles (uid, rid) VALUES (:uid, :rid)", array(
+                    ':uid' => $row['uid'],
+                    ':rid' => $rid
+                ));
+                drush_log("Assigning role '$role_name' to {$row['name']}", 'ok');
+            }
+
+            if($row['status']==1){
+
+
+
+                //check if user with same email address already exists in Drupal 7 database, if it does, do not migrate
+                /*
+                if (!$loaded = user_load($row['uid'])) {
+                    
+                    $account = new StdClass;
+
+                    $account->uid      = $row['uid'];
+                    $account->is_new   = TRUE;
+                    $account->name     = $row['name'];
+                    $account->pass     = $hashed_pass;
+                    $account->mail     = $row['mail'];
+                    $account->init     = $row['mail'];
+                    $account->status   = TRUE;
+                    $account->roles    = $row['roles'];
+                    $account->timezone = variable_get('date_default_timezone', '');
+                    //create user in Drupal 7 site 
+                    user_save($account);
+                    //print_r($account);
+                    //print message
+                    echo "User acount ".$row['name']." has been " . ($account->is_new ? 'created' : 'updated') . "\n";
+                    $counter++;
+                } else {
+                    echo $row['name'] . ' (' . $row['mail'] . ' - uid: ' . $row['uid'] . ' - account already exists for uid ' . $loaded->uid . " - not imported\n";
+                }
+                */
+
+            }
+        
+        }      
+
+        /*
         if (($handle = fopen(IMPORT_INTRANET_USERS_CSV_FILE, "r")) !== false) {
             while (($data = fgetcsv($handle, 1000, ",")) !== false) {
                 db_query("
@@ -669,6 +784,8 @@ class IntranetImport {
             }
             fclose($handle);
         }
+        */
+
     }
 
     // Private (helper) functions //
@@ -703,6 +820,8 @@ class IntranetImport {
                 $status     = $ticket->state;
                 $complete   = $ticket->state == 4 ? 1 : 0;
 
+                drush_log('Creating ci_support_content entity for nid ' . $content_nid, 'ok');
+
                 db_query("
                     REPLACE INTO ci_support_content (content_nid, client_nid, assigned, subscribed, status, priority, complete)
                           VALUES (:content_nid, :client_nid, :assigned, :subscribed, :status, :priority, :complete)
@@ -710,7 +829,7 @@ class IntranetImport {
                       ':content_nid' => $content_nid,
                       ':client_nid'  => $client_nid,
                       ':assigned'    => $assigned,
-                      ':subscribed'  => $subscribed,
+                      ':subscribed'  => serialize($subscribed),
                       ':status'      => $status,
                       ':priority'    => $priority,
                       ':complete'    => $complete
@@ -771,7 +890,7 @@ class IntranetImport {
         ", array(
               ':content_nid' => $content_nid
            )
-        );
+        )->fetchField();
     }
 
     /**
@@ -873,8 +992,9 @@ function drush_import_intranet() {
 
     $import->prepare();
 
-    //$import->users(); // this has been run
+    $import->users();
 
+    
     // do ogs first, because other things link to them
     $import->sites();
     
@@ -891,7 +1011,8 @@ function drush_import_intranet() {
     $import->assignSupportContent();
     
     # import comments and link to content
-    $import->comments();
+    //$import->comments();
+    
 
     # todo 
     //$import->files();

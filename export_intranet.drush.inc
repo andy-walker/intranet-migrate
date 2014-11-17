@@ -165,7 +165,7 @@ function drush_export_intranet() {
                 
                 db_query("
                     INSERT INTO circle_import_data (id, entity_type, entity_id, parent_entity_id, type, data) 
-                         VALUES (NULL, '$entity', '{$result->nid}', '{$result->group_nid}', '', '%s')
+                         VALUES (NULL, '$entity', '{$row->nid}', '{$row->group_nid}', '', '%s')
                 ",
                     serialize($row)
                 );               
@@ -191,7 +191,7 @@ function drush_export_intranet() {
                 INSERT INTO circle_import_data (id, entity_type, entity_id, parent_entity_id, type, data) 
                      VALUES (NULL, 'user', {$user->uid}, 0, '', '%s')
             ",
-                serialize($user)
+                serialize(user_load($user->uid))
             );
 
             // output progress
