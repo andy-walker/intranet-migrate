@@ -46,6 +46,8 @@ function import_intranet_drush_help($section) {
 class IntranetImport {
     
     private $nid_before;
+    private $support_assigned;
+    private $support_subscribed;
 
     public function __construct() {
         
@@ -66,16 +68,71 @@ class IntranetImport {
 
     public function assignSupportContent() {
 
-        $results = db_query("SELECT nid FROM node WHERE type = 'support_ticket'");
+        $results = db_query("SELECT nid FROM node WHERE type IN ('support_ticket')");
         foreach ($results as $result) {
             # may not perform this check in future - ie: update all
-            if (!$this->hasSupportContentEntity($result->nid)) {
-                drush_log('No support content entity for node ' . $result->nid . '. Creating...', 'ok');
+            //if (!$this->hasSupportContentEntity($result->nid)) {
+                drush_log('Replacing content entity for node ' . $result->nid, 'ok');
                 $this->createSupportContentEntity($result->nid);
-            } else 
-                drush_log('Support content entity already exists for node ' . $result->nid . '. Skipping record.', 'ok');
+            //} else 
+            //    drush_log('Support content entity already exists for node ' . $result->nid . '. Skipping record.', 'ok');
         }
     
+
+    }
+
+    public function assignTodoContent() {
+
+        foreach (db_query("SELECT * FROM circle_import_data WHERE type = 'todo'") as $source) {
+            
+            // unserialize existing D6 node data
+            if (!$source = unserialize($source->data)) {
+                drush_log('Unable to unserialize node data', 'warning');
+                continue;
+            }
+
+            // create ci_support_content entity for the todo
+            if ($content_nid = $source->nid) {
+                
+                if (!$group_nid = $this->getContentGroup($content_nid)) {
+                    drush_log('Unable to get group nid for todo ' . $content_nid, 'warning');
+                    continue;                    
+                }
+                
+                if (!$client_nid = $this->getClientForSite($group_nid)) {
+                    drush_log('Unable to get client nid for group nid ' . $group_nid, 'warning');
+                    continue;
+                }
+
+                $assigned   = $source->field_assigned[0]['uid'];
+                $subscribed = array(); // no subscriptions on D6 todos
+
+                $complete = 0;
+                $status   = 2; // active
+
+                if (isset($source->field_status[0]['value']) and $source->field_status[0]['value'] == 'closed')
+                    $complete = 1;
+
+                if ($complete)
+                    $status = 4; // closed
+
+                db_query("
+                    REPLACE INTO ci_support_content (content_nid, client_nid, assigned, subscribed, status, priority, complete)
+                          VALUES (:content_nid, :client_nid, :assigned, :subscribed, :status, :priority, :complete)
+                ", array(
+                      ':content_nid' => $content_nid,
+                      ':client_nid'  => $group_nid,
+                      ':assigned'    => $assigned ? $assigned : 350, // assign to maya if no one assigned
+                      ':subscribed'  => serialize($subscribed),
+                      ':status'      => $status,
+                      ':priority'    => 2,
+                      ':complete'    => $complete
+                   )
+                );
+            
+            } else drush_log('Error: no node id', 'error');
+
+        }        
 
     }
 
@@ -147,7 +204,7 @@ class IntranetImport {
         // some properties are the same in all cases - add those to this array:
         $properties_static = array(
             'language' => 'und',
-            //'status'   => 1
+            'revision' => 1
         );
 
         // some properties can be copied as is - add those this array:
@@ -155,8 +212,13 @@ class IntranetImport {
             'pid', 'nid', 'uid', 'subject', 'status', 'hostname', 'name', 'mail', 'homepage'
         );
 
-        $max_cid                = db_query("SELECT MAX(cid) FROM comment")->fetchField();
-        $min_ticket_comment_cid = db_query("SELECT MIN(entity_id) FROM circle_import_data WHERE entity_type = 'support_ticket_comment'")->fetchField();
+        //$max_cid                = db_query("SELECT MAX(cid) FROM comment")->fetchField();
+        //$min_ticket_comment_cid = db_query("SELECT MIN(entity_id) FROM circle_import_data WHERE entity_type = 'support_ticket_comment'")->fetchField();
+
+        db_query("TRUNCATE TABLE comment");
+        db_query("TRUNCATE TABLE field_data_comment_body");
+        db_query("TRUNCATE TABLE field_revision_comment_body");
+        db_query("TRUNCATE TABLE ci_support_comments");
       
         foreach (db_query("SELECT * FROM circle_import_data WHERE entity_type = 'comment'") as $source) {
 
@@ -180,7 +242,7 @@ class IntranetImport {
             // convert body to D7 format
             $comment->comment_body['und'][0] = array(
                 'value'  => $source->comment,
-                'format' => $source->format
+                'format' => $source->format == 1 ? 4 : $source->format // NB: input format 1 (filtered html) doesn't exist on D7 site
             );
 
             //$comment->is_new = !$this->comment_exists($comment->cid);
@@ -197,22 +259,27 @@ class IntranetImport {
                     $comment->node_type = 'comment_node_todo';
                     break;
                 default:
-                    drush_log('Unable to determine node type for comment id: ' . $comment->cid . ' .. ' . print_r($node, true), 'warning');
+                    drush_log('Unable to determine node type for comment id: ' . $source->cid . ' .. ' . print_r($node, true), 'warning');
             }
 
             drush_log('Inserting comment: ' . $comment->subject, 'ok');
-            //echo "Before: ";
-            //print_r($comment);
+                        
             comment_submit($comment);
             comment_save($comment);
-            //echo "After: ";
-            //print_r($comment);
 
+            // update created / changed via db query - comment_save() will ignore these if set
+            if (isset($source->timestamp) and !empty($source->timestamp))
+                db_query("UPDATE comment SET changed = :timestamp, created = :timestamp WHERE cid = :cid", array(
+                    ':timestamp' => $source->timestamp,
+                    ':cid'       => $comment->cid
+                ));
+            
             switch ($node->type) {
                 
                 case 'support_ticket':
+                case 'todo':
                     
-                    if ($source->cid >= $min_ticket_comment_cid) {
+                    if (/*$source->cid >= $min_ticket_comment_cid*/1) {
 
                         if (!$ticket_comment = $this->loadSupportEntity('ticket_comment', $source->cid)) {
                             drush_log('Unable to load support_ticket_comment record for cid ' . $source->cid, 'warning');
@@ -252,8 +319,24 @@ class IntranetImport {
 
         }
 
-        db_query("UPDATE comment SET status = 1 WHERE cid > " . $max_cid);
+        db_query("UPDATE comment SET status = 1 WHERE 1");
+        db_query("update field_data_comment_body set comment_body_format = 4 where comment_body_format = 1");
+        db_query("update field_revision_comment_body set comment_body_format = 4 where comment_body_format = 1");
         
+    }
+
+    public function fixComments() {
+
+        foreach (db_query("SELECT nid FROM node WHERE type = 'support_ticket'") as $node) {
+            $nid = $node->nid;
+            $comment_count = db_query("SELECT COUNT(*) FROM comment WHERE nid = $nid")->fetchField();
+            $comment = db_query("SELECT * FROM comment WHERE nid = $nid ORDER BY cid DESC LIMIT 1")->fetchObject();
+            if (!$comment->cid)
+                $comment->cid = 0;
+            echo "Updating node_comment_statistics for node id $nid\n";
+            db_query("UPDATE node_comment_statistics SET comment_count = $comment_count, cid = {$comment->cid} WHERE nid = $nid");
+        }
+
     }
 
     // Main import functions //
@@ -262,7 +345,8 @@ class IntranetImport {
 
         // some properties are the same in all cases - add those to this array:
         $properties_static = array(
-            'language' => 'und'
+            'language' => 'und',
+            'revision' => 1
         );
 
         // some properties can be copied as is - add those this array:
@@ -279,7 +363,8 @@ class IntranetImport {
         foreach (db_query("SELECT * FROM circle_import_data WHERE type = 'notes'") as $source) {
             
             // unserialize existing D6 node data
-            $source = unserialize($source->data);
+            if (!$source = unserialize($source->data))
+                continue;
             
             // construct D7 node object
             $node   = new StdClass;
@@ -301,21 +386,34 @@ class IntranetImport {
             }
 
             // convert og content field to D7 format ..
-            foreach ($source->og_groups as $gid)
-                $node->og_group_ref['und'][] = array('target_id' => $gid);
+            if ($source->og_groups and is_array($source->og_groups))
+                foreach ($source->og_groups as $gid)
+                    $node->og_group_ref['und'][] = array('target_id' => $gid);
 
             // transfer any existing taxonomy terms
-            foreach ($source->taxonomy as $tid => $term) {
-                $destination_field = 'taxonomy_vocabulary_' . $term->vid;
-                $node->{$destination_field}['und'][] = array(
-                    'tid' => $tid
-                );
+            if (is_array($source->taxonomy and $source->taxonomy)) {
+                foreach ($source->taxonomy as $tid => $term) {
+                    $destination_field = 'taxonomy_vocabulary_' . $term->vid;
+                    $node->{$destination_field}['und'][] = array(
+                        'tid' => $tid
+                    );
+                }
             }
+            //print "Source = ";
+            //print_r($source);
+            //print "Node = ";
+            //print_r($node);
             
             drush_log(($node->is_new ? 'Inserting' : 'Updating') . ' notes node: ' . $node->title, 'ok');
 
             // save new node
             node_save($node);
+
+            # set 'changed' date to whatever it was on the old site (node_save() will set to current time)
+            db_query("UPDATE node SET changed = :changed WHERE nid = :nid", array(
+                ':changed' => $source->changed,
+                ':nid'     => $node->nid
+            ));
 
             // path alias stuff
             if ($source->path) {
@@ -330,6 +428,58 @@ class IntranetImport {
 
         }
 
+    }
+
+    public function og_assign_content() {
+
+        foreach (db_query("SELECT data FROM circle_import_data WHERE entity_type = 'og_ancestry'") as $source) {
+            $source = unserialize($source->data);
+            // if node not already assigned, assign node
+            if (!db_query("SELECT 1 FROM og_membership WHERE entity_type = 'node' AND etid = {$source->nid}")) {
+                drush_log('Inserting og_membership record for node id ' . $source->nid . ': ' . node_load($source->nid)->title, 'ok');
+                db_query("
+                    INSERT INTO og_membership (id, type, etid, entity_type, gid, state, created, group_type, field_name, language
+                    ) VALUES (NULL, 'og_membership_type_default', {$source->nid}, 'node', {$source->gid}, 1, CURRENT_TIMESTAMP(), 'node', 'og_group_ref', 'en')
+                ");
+            } else drush_log('Skipping, existing og membership record for ' . $source->nid . ': ' . node_load($source->nid)->title, 'warning');
+        }
+
+    }
+
+    public function og_assign_users() {
+        
+        foreach (db_query("SELECT data FROM circle_import_data WHERE entity_type = 'og_uid'") as $source) {
+            
+            $source = unserialize($source->data);
+
+            if (!db_query("SELECT 1 FROM og_membership WHERE entity_type = 'user' AND etid = {$source->uid} AND gid = {$source->nid}")->fetchField()) { 
+                if ($source->is_active) {
+                    drush_log('Creating og membership for user id ' . $source->uid, 'ok');
+                    db_query("
+                        INSERT INTO og_membership (id, type, etid, entity_type, gid, state, created, group_type, field_name, language
+                        ) VALUES (NULL, 'og_membership_type_default', {$source->uid}, 'user', {$source->nid}, 1, {$source->created}, 'node', 'og_group_ref', 'en')
+                    ");
+
+                }
+
+            }
+            // insert / update og roles - there are only two, administrator and member
+            // so look at is_admin field to determine the role
+            if ($source->is_admin) {
+                // remove role 8 (member) if they have it, even though it's 
+                // probably ok to keep
+                db_query("DELETE FROM og_users_roles WHERE uid = {$source->uid} AND gid = {$source->nid} AND rid IN (7, 8) AND group_type = 'node'");
+                // assign rid 9 (administrator member)
+                db_query("REPLACE INTO og_users_roles (uid, rid, gid, group_type) VALUES ({$source->uid}, 9, {$source->nid}, 'node')");
+            } else {
+                // remove role 9 (administrator member) and 7 (non-member) if they have it
+                db_query("DELETE FROM og_users_roles WHERE uid = {$source->uid} AND gid = {$source->nid} AND rid IN (7, 9) AND group_type = 'node'");
+                // assign rid 8 (member)
+                db_query("REPLACE INTO og_users_roles (uid, rid, gid, group_type) VALUES ({$source->uid}, 8, {$source->nid}, 'node')");
+            }
+
+        }       
+    
     }
 
     /**
@@ -378,7 +528,8 @@ class IntranetImport {
         
         // some properties are the same in all cases - add those to this array:
         $properties_static = array(
-            'language' => 'und'
+            'language' => 'und',
+            'revision' => 1
         );
 
         // some properties can be copied as is - add those this array:
@@ -469,6 +620,13 @@ class IntranetImport {
             drush_log(($node->is_new ? 'Inserting' : 'Updating') . ' site node: ' . $node->title, 'ok');
             //print_r($node);
             node_save($node);
+
+            # set 'changed' date to whatever it was on the old site (node_save() will set to current time)
+            db_query("UPDATE node SET changed = :changed WHERE nid = :nid", array(
+                ':changed' => $source->changed,
+                ':nid'     => $node->nid
+            ));
+
             //og_insert_group($node);
             
             // reassign og membership from old group to this group
@@ -535,7 +693,8 @@ class IntranetImport {
         // some properties are the same in all cases - add those to this array:
         $properties_static = array(
             'language' => 'und',
-            'status'   => 1
+            'status'   => 1,
+            'revision' => 1
         );
 
         // some properties can be copied as is - add those this array:
@@ -585,7 +744,11 @@ class IntranetImport {
             } else {
                 drush_log('Invalid / missing data for field_hours_spent_support', 'warning');
             }
-
+            
+            # populate og group ref
+            if (is_array($source->og_groups) and $source->og_groups)
+                $node->og_group_ref['und'][0]['target_id'] = reset($source->og_groups);
+            
             $node->is_new = !$this->node_exists($source->nid);
 
             // todo: taxonomy, additional fields ..
@@ -596,7 +759,32 @@ class IntranetImport {
             drush_log(($node->is_new ? 'Inserting' : 'Updating') . ' support ticket node: ' . $node->title, 'ok');
             #if ($node->nid == 3822)
             #    print_r($node);
-            node_save($node);
+
+            //print_r($node);
+            try {
+                node_save($node);
+            } catch (Exception $e) {
+                drush_log('Error saving support ticket: ' . $e->getMessage(), 'error');
+                continue;
+            }
+
+            if ($source->path) {
+                // create path for the new node which is the same as the old one
+                $path_info = array(
+                    'source'   => "node/{$node->nid}",
+                    'alias'    => $source->path,
+                    'language' => 'und'               
+                );
+                path_save($path_info);
+            } else {
+                drush_log('No path found when importing node ' . $source->entity_id, 'warning');   
+            }
+
+            # set 'changed' date to whatever it was on the old site (node_save() will set to current time)
+            db_query("UPDATE node SET changed = :changed WHERE nid = :nid", array(
+                ':changed' => $source->changed,
+                ':nid'     => $node->nid
+            ));
 
         }
 
@@ -607,19 +795,33 @@ class IntranetImport {
 
         // some properties are the same in all cases - add those to this array:
         $properties_static = array(
-            'language' => 'und'
+            'language' => 'und',
+            'revision' => 1
         );
 
         // some properties can be copied as is - add those this array:
         $properties_unchanged = array(
-            'uid', 'title', 'type', 'log', 'status', 'created', 'changed', 'comment',
+            'nid', 'uid', 'title', 'type', 'log', 'status', 'created', 'changed', 'comment',
             'promote', 'sticky', 'tnid', 'translate', 'revision_timestamp', 'revision_uid',
             'data', 'last_comment_timestamp', 'last_comment_name', 'name', 'picture'
         );
 
+        $properties_changed = array(
+            'field_assigned', 'field_completed', 'field_estimate', 'field_milestone',
+            'field_completion'
+        );
+
         // some fields need to be upgraded to D7 array syntax (with language keys)
         // add those to this array:
-        $properties_changed = array();
+        $fields_mapped = array(
+            'field_stage' => array(
+                'Needs info'         => 0,
+                'Active'             => 1,
+                'Awaiting feedback'  => 2,
+                'Project Management' => 3,
+                'Ongoing Support'    => 4
+            )
+        );
 
         foreach (db_query("SELECT * FROM circle_import_data WHERE type = 'todo'") as $source) {
             
@@ -641,12 +843,40 @@ class IntranetImport {
             foreach ($properties_changed as $property)
                 $node->$property = array('und' => $source->$property);
 
+            if ($source->field_hours_spent)
+                $node->field_hours_spent_todo['und'] = $source->field_hours_spent;
+
+            // add up field_hours_spent - add to field_hours_total
+            $total = 0;
+            foreach ($source->field_hours_spent as $hours_spent)
+                $total += $hours_spent['value'];
+
+            $node->field_hours_total['und'][0]['value'] = number_format($total, 2);
+            $node->field_stage['und'][0]['value']       = $this->translate('field_stage', $source->field_stage[0]['value']);
+            
+            $node->field_invoiced['und'][0]['value']           = $source->field_invoiced[0]['value'] == 'invoiced' ? 1 : 0;
+            $node->field_invoice_as_project['und'][0]['value'] = $source->field_part_of_project[0]['value'] == 'invoice as part of project' ? 1 : 0;
+
+            $node->field_monthly_support_hours['und'][0]['value'] = 
+                $source->field_todo_support_hours[0]['value'] == 'Off' ? 0 : 1;
+
+            /*
+            foreach ($fields_mapped as $property => $map)
+                if (isset($source->$property) and isset($map[$property]))
+                    $node->$property = array('und' => $map[$source->$property[0]['value']]);
+                else drush_log('Unable to locate map for ' . $property, 'warning');
+            */
+
             $node->is_new = !$this->node_exists($node->nid);
 
             if (trim($source->body)) {
                 $node->body['und'][0]['value']  = $source->body;
                 $node->body['und'][0]['format'] = $source->format;
             }
+
+            # populate og group ref
+            if (is_array($source->og_groups) and $source->og_groups)
+                $node->og_group_ref['und'][0]['target_id'] = reset($source->og_groups);
 
             // todo: additional fields, taxonomy etc
 
@@ -656,9 +886,26 @@ class IntranetImport {
             drush_log(($node->is_new ? 'Inserting' : 'Updating') . ' todo node: ' . $node->title, 'ok');
             node_save($node);
 
+            if ($source->path) {
+                // create path for the new node which is the same as the old one
+                $path_info = array(
+                    'source'   => "node/{$node->nid}",
+                    'alias'    => $source->path,
+                    'language' => 'und'               
+                );
+                path_save($path_info);
+            } else {
+                drush_log('No path found when importing node ' . $source->entity_id, 'warning');   
+            }
+
+            # set 'changed' date to whatever it was on the old site (node_save() will set to current time)
+            db_query("UPDATE node SET changed = :changed WHERE nid = :nid", array(
+                ':changed' => $source->changed,
+                ':nid'     => $node->nid
+            ));
+
         }
 
-        // todo: import comments!
     }
 
     /**
@@ -817,8 +1064,10 @@ class IntranetImport {
                 $subscribed = $this->getSupportSubscribed($content_nid);
                 $ticket     = $this->loadSupportEntity('ticket', $content_nid);
                 $priority   = $ticket->priority;
-                $status     = $ticket->state;
-                $complete   = $ticket->state == 4 ? 1 : 0;
+                $status     = $this->getContentState($content_nid);
+                $complete   = $status == 4 ? 1 : 0;
+
+                echo "State = " . $status . PHP_EOL;
 
                 drush_log('Creating ci_support_content entity for nid ' . $content_nid, 'ok');
 
@@ -827,8 +1076,8 @@ class IntranetImport {
                           VALUES (:content_nid, :client_nid, :assigned, :subscribed, :status, :priority, :complete)
                 ", array(
                       ':content_nid' => $content_nid,
-                      ':client_nid'  => $client_nid,
-                      ':assigned'    => $assigned,
+                      ':client_nid'  => $group_nid,
+                      ':assigned'    => $assigned ? $assigned : 350, // assign to maya if no one assigned
                       ':subscribed'  => serialize($subscribed),
                       ':status'      => $status,
                       ':priority'    => $priority,
@@ -862,6 +1111,10 @@ class IntranetImport {
               ':content_nid' => $content_nid
            )
         )->fetchField();
+    }
+
+    private function getContentState($nid) {
+        return db_query("SELECT state FROM support_ticket WHERE nid = " . $nid)->fetchField();
     }
 
     private function getSupportAssigned($ticket_nid) {
@@ -972,7 +1225,24 @@ class IntranetImport {
             UPDATE url_alias SET source = 'node/$new_nid'
              WHERE source = 'node/$old_nid'
         ");
-    }  
+    }
+
+    /**
+     * Translate field keys
+     */
+    private function translate($field_name, $field_value) {
+        $mapping = array(
+            'field_stage' => array(
+                'Needs info'         => 0,
+                'Active'             => 1,
+                'Awaiting feedback'  => 2,
+                'Project Management' => 3,
+                'Ongoing Support'    => 4
+            )
+        );
+        if (isset($mapping[$field_name]))
+            return $mapping[$field_name][$field_value];
+    } 
 
 
 };
@@ -985,16 +1255,14 @@ function drush_import_intranet() {
     $start_time      = microtime(true);
     $disable_modules = array('pathauto', 'ci_support', 'tracker');
     $import          = new IntranetImport();
-
+/*
     drush_print('Disabling modules: ' . implode(', ', $disable_modules) . '...');
     module_disable($disable_modules);
     drush_log('Success!', 'ok');
-
+    
     $import->prepare();
-
     $import->users();
 
-    
     // do ogs first, because other things link to them
     $import->sites();
     
@@ -1008,19 +1276,27 @@ function drush_import_intranet() {
     $import->clients();
 
     # assign todos and support tickets to clients, now they've been created
+ */   
     $import->assignSupportContent();
-    
+    $import->assignTodoContent();
+  /*  
     # import comments and link to content
-    //$import->comments();
+    $import->comments();
     
+    $import->og_assign_content();    
+    $import->og_assign_users();
+
+    $import->fixComments();
 
     # todo 
     //$import->files();
+    
     drush_print('Enabling modules: ' . implode(', ', $disable_modules) . '...');
     module_enable($disable_modules);
     drush_log('Success!', 'ok');
-
+*/
     drush_log(sprintf("Import completed in %.2f seconds\n\n", microtime(true) - $start_time), 'ok');
+
 
 }
 
